@@ -474,3 +474,377 @@ class SonzoClient(object):
         self._note_reply_pending(TSPEED, True)          
     
         
+    def _recv_byte(self, byte):
+        """
+        Non-printable filtering currently disabled because it did not play
+        well with extended character sets.
+        """
+        ## Filter out non-printing characters
+        #if (byte >= ' ' and byte <= '~') or byte == '\n':
+                      
+        if self.telnet_echo:
+            self._echo_byte(byte)
+        self.recv_buffer += byte
+
+
+    def _echo_byte(self, byte):
+        """
+        Echo a character back to the client and convert LF into CR\LF.
+        """   
+
+        if byte == '\n':
+            self.send_buffer += '\r'
+        if self.telnet_echo_password:
+            self.send_buffer += '*'
+        else:
+            self.send_buffer += byte
+
+
+    def _iac_sniffer(self, byte):
+        """
+        Watches incomming data for Telnet IAC sequences.
+        Passes the data, if any, with the IAC commands stripped to
+        _recv_byte().
+        """
+        ## Are we not currently in an IAC sequence coming from the client?
+        if self.telnet_got_iac is False:
+
+            if byte == IAC:
+                ## Well, we are now
+                self.telnet_got_iac = True
+                return
+
+            ## Are we currenty in a sub-negotion?
+            elif self.telnet_got_sb is True:
+                ## Sanity check on length
+                if len(self.telnet_sb_buffer) < 64:
+                    self.telnet_sb_buffer += byte
+                else:
+                    self.telnet_got_sb = False
+                    self.telnet_sb_buffer = ""
+                return
+
+            else:
+                ## Just a normal NVT character
+                self._recv_byte(byte)
+                return
+
+        ## Byte handling when already in an IAC sequence sent from the client
+        else:
+
+            ## Did we get sent a second IAC?
+            if byte == IAC and self.telnet_got_sb is True:
+                ## Must be an escaped 255 (IAC + IAC)
+                self.telnet_sb_buffer += byte
+                self.telnet_got_iac = False
+                return
+
+            ## Do we already have an IAC + CMD?
+            elif self.telnet_got_cmd:
+                ## Yes, so handle the option
+                self._three_byte_cmd(byte)
+                return
+
+            ## We have IAC but no CMD
+            else:
+
+                ## Is this the middle byte of a three-byte command?
+                if byte == DO:
+                    self.telnet_got_cmd = DO
+                    return
+
+                elif byte == DONT:
+                    self.telnet_got_cmd = DONT
+                    return
+
+                elif byte == WILL:
+                    self.telnet_got_cmd = WILL
+                    return
+
+                elif byte == WONT:
+                    self.telnet_got_cmd = WONT
+                    return
+
+                else:
+                    ## Nope, must be a two-byte command
+                    self._two_byte_cmd(byte)
+
+
+
+    def _two_byte_cmd(self, cmd):
+        """
+        Handle incoming Telnet commands that are two bytes long.
+        """
+        logging.debug("Got two byte cmd '{}'".format(ord(cmd)))
+
+        if cmd == SB:
+            ## Begin capturing a sub-negotiation string
+            self.telnet_got_sb = True
+            self.telnet_sb_buffer = ''
+
+        elif cmd == SE:
+            ## Stop capturing a sub-negotiation string
+            self.telnet_got_sb = False
+            self._sb_decoder()
+
+        elif cmd == NOP:
+            pass
+
+        elif cmd == DATMK:
+            pass
+
+        elif cmd == IP:
+            pass
+
+        elif cmd == AO:
+            pass
+
+        elif cmd == AYT:
+            pass
+
+        elif cmd == EC:
+            pass
+
+        elif cmd == EL:
+            pass
+
+        elif cmd == GA:
+            pass
+
+        else:
+            logging.warning("Send an invalid 2 byte command")
+
+        self.telnet_got_iac = False
+        self.telnet_got_cmd = None
+
+    def _three_byte_cmd(self, option):
+        """
+        Handle incoming Telnet commmands that are three bytes long.
+        """
+        cmd = self.telnet_got_cmd
+        logging.debug("Got three byte cmd {}:{}".format(ord(cmd), ord(option)))
+
+        ## Incoming DO's and DONT's refer to the status of this end
+        if cmd == DO:
+            if option == BINARY or option == SGA or option == ECHO:
+                
+                if self._check_reply_pending(option):
+                    self._note_reply_pending(option, False)
+                    self._note_local_option(option, True)
+
+                elif (self._check_local_option(option) is False or
+                        self._check_local_option(option) is UNKNOWN):
+                    self._note_local_option(option, True)
+                    self._iac_will(option)
+                    ## Just nod unless setting echo
+                    if option == ECHO:
+                        self.telnet_echo = True
+
+            else:
+                ## All other options = Default to refusing once
+                if self._check_local_option(option) is UNKNOWN:
+                    self._note_local_option(option, False)
+                    self._iac_wont(option)
+
+        elif cmd == DONT:
+            if option == BINARY or option == SGA or option == ECHO:
+
+                if self._check_reply_pending(option):
+                    self._note_reply_pending(option, False)
+                    self._note_local_option(option, False)
+
+                elif (self._check_local_option(option) is True or
+                        self._check_local_option(option) is UNKNOWN):
+                    self._note_local_option(option, False)
+                    self._iac_wont(option)
+                    ## Just nod unless setting echo
+                    if option == ECHO:
+                        self.telnet_echo = False
+            else:
+                ## All other options = Default to ignoring
+                pass
+
+
+        ## Incoming WILL's and WONT's refer to the status of the client
+        elif cmd == WILL:
+            if option == ECHO:
+
+                ## Nutjob client offering to echo the server...
+                if self._check_remote_option(ECHO) is UNKNOWN:
+                    self._note_remote_option(ECHO, False)
+                    # No no, bad client!
+                    self._iac_dont(ECHO)
+
+            elif option == NAWS or option == SGA:
+                if self._check_reply_pending(option):
+                    self._note_reply_pending(option, False)
+                    self._note_remote_option(option, True)
+
+                elif (self._check_remote_option(option) is False or
+                        self._check_remote_option(option) is UNKNOWN):
+                    self._note_remote_option(option, True)
+                    self._iac_do(option)
+                    ## Client should respond with SB (for NAWS)
+
+            elif option == TTYPE:
+                if self._check_reply_pending(TTYPE):
+                    #self._note_reply_pending(TTYPE, False)
+                    self._note_remote_option(TTYPE, True)
+                    ## Tell them to send their terminal type
+                    self.send("{}{}{}{}{}{}".format(IAC, SB, TTYPE, SEND, IAC, SE))
+
+                elif (self._check_remote_option(TTYPE) is False or
+                        self._check_remote_option(TTYPE) is UNKNOWN):
+                    self._note_remote_option(TTYPE, True)
+                    self._iac_do(TTYPE)
+            
+            elif option == TSPEED:
+                if self._check_reply_pending(TSPEED):
+                    self._note_reply_pending(TSPEED, False)
+                    self._note_remote_option(TSPEED, True)
+                    ## Tell them to send their terminal speed
+                    self.send("{}{}{}{}{}{}".format(IAC, SB, TSPEED, SEND, IAC, SE))
+                    
+                elif (self._check_remote_option(TSPEED) is False or
+                      self._check_remote_option(TSPEED) is UNKNOWN):
+                    self._note_remote_option(TSPEED, True)
+                    self._iac_do(TSPEED)                
+
+        elif cmd == WONT:
+            if option == ECHO:
+
+                ## Client states it wont echo us -- good, they're not supposes to.
+                if self._check_remote_option(ECHO) is UNKNOWN:
+                    self._note_remote_option(ECHO, False)
+                    self._iac_dont(ECHO)
+                    
+            if option == TSPEED:
+                if self._check_reply_pending(option):
+                    self._note_reply_pending(option, False)
+                    self._note_remote_option(option, False)
+                elif (self._check_remote_option(option) is True or
+                      self._check_remote_option(option) is UNKNOWN):
+                    self._note_remote_option(option, False)
+                    self._iac_dont(option)
+                self.terminal_speed = "Not Supported"
+
+            elif option == SGA or option == TTYPE:
+
+                if self._check_reply_pending(option):
+                    self._note_reply_pending(option, False)
+                    self._note_remote_option(option, False)
+
+                elif (self._check_remote_option(option) is True or
+                        self._check_remote_option(option) is UNKNOWN):
+                    self._note_remote_option(option, False)
+                    self._iac_dont(option)
+
+                ## Should TTYPE be below this?
+
+            else:
+                ## All other options = Default to ignoring
+                pass
+        else:
+            logging.warning("Send an invalid 3 byte command")
+
+        self.telnet_got_iac = False
+        self.telnet_got_cmd = None
+
+
+    def _sb_decoder(self):
+        """
+        Figures out what to do with a received sub-negotiation block.
+        """
+        bloc = self.telnet_sb_buffer
+        if len(bloc) > 2:
+
+            if bloc[0] == TTYPE and bloc[1] == IS:
+                self.terminal_type = bloc[2:]
+                self._note_reply_pending(TTYPE, False)
+                #logging.debug("Terminal type = '{}'".format(self.terminal_type))
+                
+            if bloc[0] == TSPEED and bloc[1] == IS:
+                speed = bloc[2:].split(',')
+                self.terminal_speed = speed[0]
+                
+            if bloc[0] == NAWS:
+                if len(bloc) != 5:
+                    logging.warning("Bad length on NAWS SB: " + str(len(bloc)))
+                else:
+                    self.columns = (256 * ord(bloc[1])) + ord(bloc[2])
+                    self.rows = (256 * ord(bloc[3])) + ord(bloc[4])
+
+                #logging.info("Screen is {} x {}".format(self.columns, self.rows))
+
+        self.telnet_sb_buffer = ''
+
+
+    #---[ State Juggling for Telnet Options ]----------------------------------
+
+    ## Sometimes verbiage is tricky.  I use 'note' rather than 'set' here
+    ## because (to me) set infers something happened.
+
+    def _check_local_option(self, option):
+        """Test the status of local negotiated Telnet options."""
+        if option not in self.telnet_opt_dict:
+            self.telnet_opt_dict[option] = TelnetOption()
+        return self.telnet_opt_dict[option].local_option
+
+
+    def _note_local_option(self, option, state):
+        """Record the status of local negotiated Telnet options."""
+        if option not in self.telnet_opt_dict:
+            self.telnet_opt_dict[option] = TelnetOption()
+        self.telnet_opt_dict[option].local_option = state
+        self.telnet_opt_dict[option].option_text = Telopts[option]
+
+
+    def _check_remote_option(self, option):
+        """Test the status of remote negotiated Telnet options."""
+        if option not in self.telnet_opt_dict:
+            self.telnet_opt_dict[option] = TelnetOption()
+        return self.telnet_opt_dict[option].remote_option
+
+
+    def _note_remote_option(self, option, state):
+        """Record the status of local negotiated Telnet options."""
+        if option not in self.telnet_opt_dict:
+            self.telnet_opt_dict[option] = TelnetOption()
+        self.telnet_opt_dict[option].remote_option = state
+        self.telnet_opt_dict[option].option_text = Telopts[option]
+
+
+    def _check_reply_pending(self, option):
+        """Test the status of requested Telnet options."""
+        if option not in self.telnet_opt_dict:
+            self.telnet_opt_dict[option] = TelnetOption()
+        return self.telnet_opt_dict[option].reply_pending
+
+
+    def _note_reply_pending(self, option, state):
+        """Record the status of requested Telnet options."""
+        if option not in self.telnet_opt_dict:
+            self.telnet_opt_dict[option] = TelnetOption()
+        self.telnet_opt_dict[option].reply_pending = state
+
+
+    #---[ Telnet Command Shortcuts ]-------------------------------------------
+
+    def _iac_do(self, option):
+        """Send a Telnet IAC "DO" sequence."""
+        self.send("{}{}{}".format(IAC, DO, option))
+
+
+    def _iac_dont(self, option):
+        """Send a Telnet IAC "DONT" sequence."""
+        self.send("{}{}{}".format(IAC, DONT, option))
+
+
+    def _iac_will(self, option):
+        """Send a Telnet IAC "WILL" sequence."""
+        self.send("{}{}{}".format(IAC, WILL, option))
+
+
+    def _iac_wont(self, option):
+        """Send a Telnet IAC "WONT" sequence."""
+        self.send("{}{}{}".format(IAC, WONT, option))
