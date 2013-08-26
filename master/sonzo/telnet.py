@@ -5,6 +5,8 @@ import sys
 import re
 import time
 
+from collections import deque
+
 
 #--[ Global Constants ]--------------------------------------------------------
 
@@ -13,7 +15,7 @@ UNKNOWN = -1
 ## Cap sockets to 1000 on Linux because you can only have 1024 file descriptors
 MAX_CONNECTIONS = 512 if sys.platform == 'win32' else 1000
 PARA_BREAK = re.compile(r"(\n\s*\n)", re.MULTILINE)
-AUTOSENSE_TIMEOUT = 15
+AUTOSENSE_TIMEOUT = 2
 
 #--[ Telnet Commands ]---------------------------------------------------------
 
@@ -60,6 +62,8 @@ Telopts = {
     chr(34): "Line Mode"
     }
 
+#--[ Terminal Type enumerations - Mark Richardson Nov 2012]--------------------
+TERMINAL_TYPES = ['ANSI', 'XTERM', 'TINYFUGUE', 'zmud', 'VT100', 'IBM-3179-2']
 
 #--[ Connection Lost ]---------------------------------------------------------
 
@@ -75,7 +79,7 @@ class TelnetServer(object):
     Telnet Server
     """
     
-    def __init__(self, address='', port='', timeout=0.1):
+    def __init__(self, address='', port=23, timeout=0.1):
         """
         Initialize a new TelnetServer.
         
@@ -87,6 +91,7 @@ class TelnetServer(object):
         self._port = port
         self._timeout = timeout
         self._clients = {}
+        self._negotiating_clients = {}
         self._deadclients = []
         
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -95,14 +100,34 @@ class TelnetServer(object):
         try:
             self._socket.bind((self._addr, self._port))
             self._socket.listen(5)
-        except self._socket.err as err:
+        except socket.error as err:
             logging.critical("Error: Failed to create the server socket: " + str(err))
             raise
         
         self._server_fileno = self._socket.fileno()
         
-
-    def newConnection(self):
+    def run(self):
+        """
+        Start Telnet Server's Main Loop.
+        
+        Override if required, though for the most part it shouldn't
+        be necessary.
+        """
+        while True:
+            self.poll()
+            self.processClients()
+        
+        
+    def processClients(self):
+        """
+        Check each client for waiting information.
+        
+        Override this function to handle server logic.
+        """
+        pass
+        
+        
+    def newConnection(self, sock, addr):
         """
         Used to create new client object when a user first connects.
         This function is only used to create and return a custom client.
@@ -114,7 +139,7 @@ class TelnetServer(object):
         
         Example:
         
-        client = SonzoClient()
+        client = SonzoClient(sock, addr)
         return client.
         
         ============== or =================
@@ -122,7 +147,7 @@ class TelnetServer(object):
         class MyClient(SonzoClient):
         ....
         
-        client = MyClient()
+        client = MyClient(sock, addr)
         return client
         """
         pass
@@ -165,30 +190,50 @@ class TelnetServer(object):
         Return list of clients.
         """
         return self._clients.values()
-        
-        
+    
+    
     def poll(self):
         """
         Poll the server for new connections and handling OI for existing
         connections.
         """
         recv_list = [self._server_fileno]
+        dead_list = []
+        done_negotiating = []
+        
+        for client in self._negotiating_clients.values():
+            client._check_auto_sense()
+            if client._protocol_negotiation == True:
+                self._clients[client.getSocket()] = client
+                done_negotiating.append(client.getSocket())
+                self.onConnect(client)
+                
         
         for client in self._clients.values():
             if client.isConnected():
                 recv_list.append(client.getSocket())
             else:
                 self.onDisconnect(client)
-                del self._clients[client.getSocket()]
+                dead_list.append(client.getSocket())
+                
+        for client in self._negotiating_clients.values():
+            if client.isConnected():
+                recv_list.append(client.getSocket())
+            else:
+                done_negotiating.append(client.getSocket())                
 
         send_list = []
         for client in self._clients.values():
             if client.sendPending():
                 send_list.append(client.getSocket())
 
+        for client in self._negotiating_clients.values():
+            if client.sendPending():
+                send_list.append(client.getSocket())
+                
         try:                
             rlist, slist, elist = select.select(recv_list, send_list, [], self._timeout)    
-        except socket.err as err:
+        except socket.error as err:
             logging.critical("Socket Select() error: '{}: {}'".format(err[0], err[1]))
             raise
         
@@ -209,23 +254,40 @@ class TelnetServer(object):
                     sock.close()
                     continue
 
-                new_client = self.newConnection()
-                self._clients[new_client.getSocket()] = new_client
-                self.onConnect(client)
+                new_client = self.newConnection(sock, addr)
+                new_client._request_wont_echo()
+                new_client._detect_term_caps()
+                self._negotiating_clients[new_client.getSocket()] = new_client
                 continue
-             
-            try: 
-                self._clients[fileno].recv()
-            except ConnectionLost{}:
-                self.onDisconnect(self._clients[fileno])
-        
+            
+            if fileno in self._clients.keys():  
+                try: 
+                    self._clients[fileno]._recv()
+                except ConnectionLost:
+                    self.onDisconnect(self._clients[fileno])
+                    
+            elif  fileno in self._negotiating_clients.keys():            
+                try: 
+                    self._negotiating_clients[fileno]._recv()
+                except ConnectionLost:
+                    done_negociating.append(fileno)
+                    
         # Send pending buffers to client        
         for fileno in slist:
-            self._clients[fileno].send()
-            
-            
-   
-   
+            if fileno in self._clients.keys():
+                self._clients[fileno]._send()
+            elif fileno in self._negotiating_clients.keys():
+                self._negotiating_clients[fileno]._send()
+        
+        # remove clients no longer connected        
+        for dead in dead_list:
+            del self._clients[dead] 
+        del dead_list            
+
+                # Remove clients from negotiating list once done.
+        for dead in done_negotiating:
+            del self._negotiating_clients[dead]
+        del done_negotiating 
                 
 class TelnetOption(object):
     """
@@ -252,14 +314,18 @@ class SonzoClient(object):
         """
         
         self._protocol = "telnet"
+        self._protocol_negotiation = False
         self._connected = True
+        self._new_messages = True
         self._socket = socket
         self._fileno = self._socket.fileno()
         self._addr = addr[0]
         self._port = addr[1]
+        self._cmd_list = deque()
         self._terminal_type = 'UNKNOWN'
         self._terminal_speed = 'UNKNOWN'
         self._character_mode = False
+        self._cmd_ready = False
         self._ansi = False
         self._columns = 80
         self._rows = 24
@@ -268,6 +334,7 @@ class SonzoClient(object):
         self._send_buffer = ''
         self._recv_buffer = ''
         self._connect_time = time.time()
+        self._autosensetimeout = None
         # If you want to kick for being idle too long
         self._last_message = time.time()
         # Are we kicking the client off?
@@ -283,6 +350,60 @@ class SonzoClient(object):
         self._telnet_echo_password = False  # Echo back '*' for passwords?
         self._telnet_sb_buffer = ''         # Buffer for sub-negotiations
         self._auto_sensing_done = False     #True when all the negotiations are done    
+
+
+    def _detect_term_caps(self):
+        """
+        Send initial terminal negotiation options that we need and wait for the
+        replies so the variables can be set before moving out of the Auto-Sensing
+        phase. Added by Mark Richardson, Nov 2012.
+        """
+        self.send("{}{}{}{}{}{} Auto-Sensing Terminal..".format(chr(1), chr(1), chr(1), chr(1), chr(1), chr(1)))
+        self._request_terminal_type()
+        self._request_terminal_speed()
+        self._request_naws()
+        self._autosensetimeout = time.time()
+       
+       
+    def _check_auto_sense(self):
+        """
+        Checks the state of the telnet option negotiation started by detect_term_caps()
+        to see if they are all completed. If they are then the client_state should
+        be changed to allow progress. If we dont get a reply to one of these
+        a timer should allow client to proceed.
+        """
+        if self._check_reply_pending(TTYPE) is False and \
+            self._check_reply_pending(TSPEED) is False and \
+            self._check_reply_pending(NAWS) is False:
+            if(self._terminal_type in TERMINAL_TYPES):
+                self._ansi = True
+                
+            # Clear Auto-Sensing message
+            self.send("^s\n")
+            self._protocol_negotiation = True
+            return
+        
+        # For megamud since it reports TTYPE=False, TSPEED=False, NAWS=True, 
+        # and a terminal type of IBM-3179-2.
+        elif self._check_reply_pending(TTYPE) is False and \
+                self._check_reply_pending(TSPEED) is False and \
+                self._check_reply_pending(NAWS) is True and \
+                self._terminal_type == 'IBM-3179-2':
+                self.__ansi = True
+                # Clear Auto-Sensing message
+                self.send("^s\n")
+                self._protocol_negotiation = True
+                return
+        else:
+            if time.time() - self._autosensetimeout > AUTOSENSE_TIMEOUT:
+                self._ansi = False
+                # Clear Auto-Sensing message
+                self.send("^s\n")
+                self._protocol_negotiation = True
+                return
+                
+        return
+        
         
     def getSocket(self):
         """
@@ -307,12 +428,17 @@ class SonzoClient(object):
         if len(self._send_buffer):
             return True
         return False
-
+        
+        
+    def commandReady(self):
+        return self._cmd_ready
+        
+        
     def inCharacterMode(self):
         """
         Is the client in character mode?
         """
-        if self_character_mode:
+        if self._character_mode:
             return True
         else:
             return False
@@ -321,8 +447,20 @@ class SonzoClient(object):
         """
         Set client in Character Mode.
         """
-        self._character_mode = True
-        
+        if self._character_mode is True:
+            self._character_mode = False
+        else:
+            self._character_mode = True
+
+    def setANSIMode(self):
+        """
+        Change ANSI mode.
+        """
+        if self._ansi:
+            self._ansi = False 
+        else:
+            self._ansi = True
+            
         
     def setLineMode(self):
         """
@@ -331,46 +469,62 @@ class SonzoClient(object):
         self._character_mode = False
         
         
-    def send(self):
+    def addrport(self):
+        """
+        Return the client's IP address and port number as a string.
+        """
+        return "{}:{}".format(self._addr, self._port)        
+        
+        
+    def send(self, message):
+        """
+        Add new messages to the _send_buffer if allowed.
+        """
+        if self._new_messages:
+            self._send_buffer = self._send_buffer + message
+            self._send_pending = True
+           
+           
+    def _send(self):
         """
         Called by TelnetServer to send data to the client.
         """
-        if self._characterMode():
+        if self.inCharacterMode():
             try:
-                sent = self._socket.send(bytes(self.send_buffer, "cp1252"))
+                sent = self._socket.send(bytes(self._send_buffer, "cp1252"))
+                self._bytes_sent = sent
+                self._send_buffer = self._send_buffer[sent:]
             except socket.error as err:
                 self._connected = False
                 return False 
         else:
             # Is the user currently typing?
-            if len(self._recv_buffer):
+            if not len(self._recv_buffer):
+                self._send_pending = False
+                try:
+                    sent = self._socket.send(bytes(self._send_buffer, "cp1252"))
+                except socket.error as err:
+                    self._connected = False
+                    return False            
+            
+                self._bytes_sent = sent
+                self._send_buffer = self._send_buffer[sent:]
+            else:
                 # Is the users send buffer getting to large while waiting for them to finish typing? Kick them!
-                if len(self._send_buffer) > 8388608: :
+                if len(self._send_buffer) > 8388608:
                     self._kicked = True
                     return
-        
-                else:
-                    self._send_pending = False
-                    try:
-                        sent = self._socket.send(bytes(self.send_buffer, "cp1252"))
-                    except socket.error as err:
-                        self._connected = False
-                        return False            
-            
-                    self._bytes_sent = sent
-                    self._send_buffer = self._send_buffer[sent:]
-            else:
                 self._send_pending = True
              
                
             
-    def recv(self):
+    def _recv(self):
         """
         Called my TelnetServer to recieve data from the client.
         """
         try:
             #Encode recieved bytes in ansi
-            data = str(self.sock.recv(2048), "cp1252")
+            data = str(self._socket.recv(2048), "cp1252")
         except socket.error as err:
             logging.error("RECIEVE socket error '{}:{}' from {}".format(err[0], err[1], self.addrport()))
             raise ConnectionLost()        
@@ -385,17 +539,21 @@ class SonzoClient(object):
             self._iac_sniffer(byte)
              
         if self.inCharacterMode():
-            pass
-        
+            if self._recv_buffer:
+                self._cmd_list.append(self._recv_buffer)
+                self._recv_buffer = ''
+                self._cmd_ready = True
         else:
             while True:
                 mark = self._recv_buffer.find('\n')
                 if mark == -1:
                     break
-                cmd = _recv_buffer[:mark].strip()
+                cmd = self._recv_buffer[:mark].strip()
+                cmd = cmd + '\n\r'
                 self._cmd_list.append(cmd)
                 self._cmd_ready = True
-                self._recv_buff = self._recv_buffer[mark + 1]
+                self._recv_buffer = self._recv_buffer[mark+1:]
+                
                 
                 
     
@@ -482,9 +640,9 @@ class SonzoClient(object):
         ## Filter out non-printing characters
         #if (byte >= ' ' and byte <= '~') or byte == '\n':
                       
-        if self.telnet_echo:
+        if self._telnet_echo:
             self._echo_byte(byte)
-        self.recv_buffer += byte
+        self._recv_buffer += byte
 
 
     def _echo_byte(self, byte):
@@ -493,11 +651,11 @@ class SonzoClient(object):
         """   
 
         if byte == '\n':
-            self.send_buffer += '\r'
-        if self.telnet_echo_password:
-            self.send_buffer += '*'
+            self._send_buffer += '\r'
+        if self._telnet_echo_password:
+            self._send_buffer += '*'
         else:
-            self.send_buffer += byte
+            self._send_buffer += byte
 
 
     def _iac_sniffer(self, byte):
@@ -507,21 +665,21 @@ class SonzoClient(object):
         _recv_byte().
         """
         ## Are we not currently in an IAC sequence coming from the client?
-        if self.telnet_got_iac is False:
+        if self._telnet_got_iac is False:
 
             if byte == IAC:
                 ## Well, we are now
-                self.telnet_got_iac = True
+                self._telnet_got_iac = True
                 return
 
             ## Are we currenty in a sub-negotion?
-            elif self.telnet_got_sb is True:
+            elif self._telnet_got_sb is True:
                 ## Sanity check on length
-                if len(self.telnet_sb_buffer) < 64:
-                    self.telnet_sb_buffer += byte
+                if len(self._telnet_sb_buffer) < 64:
+                    self._telnet_sb_buffer += byte
                 else:
-                    self.telnet_got_sb = False
-                    self.telnet_sb_buffer = ""
+                    self._telnet_got_sb = False
+                    self._telnet_sb_buffer = ""
                 return
 
             else:
@@ -533,14 +691,14 @@ class SonzoClient(object):
         else:
 
             ## Did we get sent a second IAC?
-            if byte == IAC and self.telnet_got_sb is True:
+            if byte == IAC and self._telnet_got_sb is True:
                 ## Must be an escaped 255 (IAC + IAC)
-                self.telnet_sb_buffer += byte
-                self.telnet_got_iac = False
+                self._telnet_sb_buffer += byte
+                self._telnet_got_iac = False
                 return
 
             ## Do we already have an IAC + CMD?
-            elif self.telnet_got_cmd:
+            elif self._telnet_got_cmd:
                 ## Yes, so handle the option
                 self._three_byte_cmd(byte)
                 return
@@ -550,19 +708,19 @@ class SonzoClient(object):
 
                 ## Is this the middle byte of a three-byte command?
                 if byte == DO:
-                    self.telnet_got_cmd = DO
+                    self._telnet_got_cmd = DO
                     return
 
                 elif byte == DONT:
-                    self.telnet_got_cmd = DONT
+                    self._telnet_got_cmd = DONT
                     return
 
                 elif byte == WILL:
-                    self.telnet_got_cmd = WILL
+                    self._telnet_got_cmd = WILL
                     return
 
                 elif byte == WONT:
-                    self.telnet_got_cmd = WONT
+                    self._telnet_got_cmd = WONT
                     return
 
                 else:
@@ -579,12 +737,12 @@ class SonzoClient(object):
 
         if cmd == SB:
             ## Begin capturing a sub-negotiation string
-            self.telnet_got_sb = True
-            self.telnet_sb_buffer = ''
+            self._telnet_got_sb = True
+            self._telnet_sb_buffer = ''
 
         elif cmd == SE:
             ## Stop capturing a sub-negotiation string
-            self.telnet_got_sb = False
+            self._telnet_got_sb = False
             self._sb_decoder()
 
         elif cmd == NOP:
@@ -614,14 +772,14 @@ class SonzoClient(object):
         else:
             logging.warning("Send an invalid 2 byte command")
 
-        self.telnet_got_iac = False
-        self.telnet_got_cmd = None
+        self._telnet_got_iac = False
+        self._telnet_got_cmd = None
 
     def _three_byte_cmd(self, option):
         """
         Handle incoming Telnet commmands that are three bytes long.
         """
-        cmd = self.telnet_got_cmd
+        cmd = self._telnet_got_cmd
         logging.debug("Got three byte cmd {}:{}".format(ord(cmd), ord(option)))
 
         ## Incoming DO's and DONT's refer to the status of this end
@@ -638,7 +796,7 @@ class SonzoClient(object):
                     self._iac_will(option)
                     ## Just nod unless setting echo
                     if option == ECHO:
-                        self.telnet_echo = True
+                        self._telnet_echo = True
 
             else:
                 ## All other options = Default to refusing once
@@ -659,7 +817,7 @@ class SonzoClient(object):
                     self._iac_wont(option)
                     ## Just nod unless setting echo
                     if option == ECHO:
-                        self.telnet_echo = False
+                        self._telnet_echo = False
             else:
                 ## All other options = Default to ignoring
                 pass
@@ -747,36 +905,36 @@ class SonzoClient(object):
         else:
             logging.warning("Send an invalid 3 byte command")
 
-        self.telnet_got_iac = False
-        self.telnet_got_cmd = None
+        self._telnet_got_iac = False
+        self._telnet_got_cmd = None
 
 
     def _sb_decoder(self):
         """
         Figures out what to do with a received sub-negotiation block.
         """
-        bloc = self.telnet_sb_buffer
+        bloc = self._telnet_sb_buffer
         if len(bloc) > 2:
 
             if bloc[0] == TTYPE and bloc[1] == IS:
-                self.terminal_type = bloc[2:]
+                self._terminal_type = bloc[2:]
                 self._note_reply_pending(TTYPE, False)
                 #logging.debug("Terminal type = '{}'".format(self.terminal_type))
                 
             if bloc[0] == TSPEED and bloc[1] == IS:
                 speed = bloc[2:].split(',')
-                self.terminal_speed = speed[0]
+                self._terminal_speed = speed[0]
                 
             if bloc[0] == NAWS:
                 if len(bloc) != 5:
                     logging.warning("Bad length on NAWS SB: " + str(len(bloc)))
                 else:
-                    self.columns = (256 * ord(bloc[1])) + ord(bloc[2])
-                    self.rows = (256 * ord(bloc[3])) + ord(bloc[4])
+                    self._columns = (256 * ord(bloc[1])) + ord(bloc[2])
+                    self._rows = (256 * ord(bloc[3])) + ord(bloc[4])
 
                 #logging.info("Screen is {} x {}".format(self.columns, self.rows))
 
-        self.telnet_sb_buffer = ''
+        self._telnet_sb_buffer = ''
 
 
     #---[ State Juggling for Telnet Options ]----------------------------------
@@ -786,46 +944,46 @@ class SonzoClient(object):
 
     def _check_local_option(self, option):
         """Test the status of local negotiated Telnet options."""
-        if option not in self.telnet_opt_dict:
-            self.telnet_opt_dict[option] = TelnetOption()
-        return self.telnet_opt_dict[option].local_option
+        if option not in self._telnet_opt_dict:
+            self._telnet_opt_dict[option] = TelnetOption()
+        return self._telnet_opt_dict[option].local_option
 
 
     def _note_local_option(self, option, state):
         """Record the status of local negotiated Telnet options."""
-        if option not in self.telnet_opt_dict:
-            self.telnet_opt_dict[option] = TelnetOption()
-        self.telnet_opt_dict[option].local_option = state
-        self.telnet_opt_dict[option].option_text = Telopts[option]
+        if option not in self._telnet_opt_dict:
+            self._telnet_opt_dict[option] = TelnetOption()
+        self._telnet_opt_dict[option].local_option = state
+        self._telnet_opt_dict[option].option_text = Telopts[option]
 
 
     def _check_remote_option(self, option):
         """Test the status of remote negotiated Telnet options."""
-        if option not in self.telnet_opt_dict:
-            self.telnet_opt_dict[option] = TelnetOption()
-        return self.telnet_opt_dict[option].remote_option
+        if option not in self._telnet_opt_dict:
+            self._telnet_opt_dict[option] = TelnetOption()
+        return self._telnet_opt_dict[option].remote_option
 
 
     def _note_remote_option(self, option, state):
         """Record the status of local negotiated Telnet options."""
-        if option not in self.telnet_opt_dict:
-            self.telnet_opt_dict[option] = TelnetOption()
-        self.telnet_opt_dict[option].remote_option = state
-        self.telnet_opt_dict[option].option_text = Telopts[option]
+        if option not in self._telnet_opt_dict:
+            self._telnet_opt_dict[option] = TelnetOption()
+        self._telnet_opt_dict[option].remote_option = state
+        self._telnet_opt_dict[option].option_text = Telopts[option]
 
 
     def _check_reply_pending(self, option):
         """Test the status of requested Telnet options."""
-        if option not in self.telnet_opt_dict:
-            self.telnet_opt_dict[option] = TelnetOption()
-        return self.telnet_opt_dict[option].reply_pending
+        if option not in self._telnet_opt_dict:
+            self._telnet_opt_dict[option] = TelnetOption()
+        return self._telnet_opt_dict[option].reply_pending
 
 
     def _note_reply_pending(self, option, state):
         """Record the status of requested Telnet options."""
-        if option not in self.telnet_opt_dict:
-            self.telnet_opt_dict[option] = TelnetOption()
-        self.telnet_opt_dict[option].reply_pending = state
+        if option not in self._telnet_opt_dict:
+            self._telnet_opt_dict[option] = TelnetOption()
+        self._telnet_opt_dict[option].reply_pending = state
 
 
     #---[ Telnet Command Shortcuts ]-------------------------------------------
