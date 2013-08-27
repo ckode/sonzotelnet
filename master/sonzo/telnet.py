@@ -224,7 +224,7 @@ class TelnetServer(object):
 
         send_list = []
         for client in self._clients.values():
-            if client.sendPending():
+            if client.sendPending() or client._echo_buffer:
                 send_list.append(client.getSocket())
 
         for client in self._negotiating_clients.values():
@@ -255,7 +255,7 @@ class TelnetServer(object):
                     continue
 
                 new_client = self.newConnection(sock, addr)
-                new_client._request_wont_echo()
+                new_client._request_will_echo()
                 new_client._detect_term_caps()
                 self._negotiating_clients[new_client.getSocket()] = new_client
                 continue
@@ -358,7 +358,7 @@ class SonzoClient(object):
         replies so the variables can be set before moving out of the Auto-Sensing
         phase. Added by Mark Richardson, Nov 2012.
         """
-        self.send("{}{}{}{}{}{} Auto-Sensing Terminal..".format(chr(1), chr(1), chr(1), chr(1), chr(1), chr(1)))
+        self.send("Auto-Sensing...\n\r{}{}{}{}{}{}\n\r".format(chr(1), chr(1), chr(1), chr(1), chr(1), chr(1)))
         self._request_terminal_type()
         self._request_terminal_speed()
         self._request_naws()
@@ -377,10 +377,8 @@ class SonzoClient(object):
             self._check_reply_pending(NAWS) is False:
             if(self._terminal_type in TERMINAL_TYPES):
                 self._ansi = True
-                
-            # Clear Auto-Sensing message
-            self.send("^s\n")
             self._protocol_negotiation = True
+            logging.debug("Term Type: {}".format(self._terminal_type))
             return
         
         # For megamud since it reports TTYPE=False, TSPEED=False, NAWS=True, 
@@ -390,16 +388,14 @@ class SonzoClient(object):
                 self._check_reply_pending(NAWS) is True and \
                 self._terminal_type == 'IBM-3179-2':
                 self.__ansi = True
-                # Clear Auto-Sensing message
-                self.send("^s\n")
                 self._protocol_negotiation = True
+                logging.debug("Term Type: {}".format(self._terminal_type))
                 return
         else:
             if time.time() - self._autosensetimeout > AUTOSENSE_TIMEOUT:
                 self._ansi = False
-                # Clear Auto-Sensing message
-                self.send("^s\n")
                 self._protocol_negotiation = True
+                logging.debug("Term Type: {}".format(self._terminal_type))
                 return
                 
         return
@@ -489,6 +485,16 @@ class SonzoClient(object):
         """
         Called by TelnetServer to send data to the client.
         """
+        
+        if self._telnet_echo and self._echo_buffer:
+            try:
+                sent = self._socket.send(bytes(self._echo_buffer, "cp1252"))
+            except socket.error as err:
+                self._connected = False
+                return False            
+            self._echo_buffer = ''
+            
+            
         if self.inCharacterMode():
             try:
                 sent = self._socket.send(bytes(self._send_buffer, "cp1252"))
@@ -516,7 +522,8 @@ class SonzoClient(object):
                     return
                 self._send_pending = True
              
-               
+
+            
             
     def _recv(self):
         """
@@ -533,8 +540,20 @@ class SonzoClient(object):
         if not len(data):
             logging.debug("No data received.  Connection lost.")
             raise ConnectionLost()
-        
-        
+         
+        # Look for backspaces and handle them 
+        tmp = ''
+        for byte in data:
+            if chr(8) in byte:
+                if len(self._recv_buffer) is not 0:
+                    self._recv_buffer = self._recv_buffer[:-1]
+                    if self._telnet_echo and self._echo_buffer:
+                        self._echo_buffer = self._echo_buffer[:-1]
+            else:
+                tmp = tmp + byte
+ 
+        data = tmp 
+                   
         for byte in data:
             self._iac_sniffer(byte)
              
@@ -651,11 +670,11 @@ class SonzoClient(object):
         """   
 
         if byte == '\n':
-            self._send_buffer += '\r'
+            self._echo_buffer += '\r'
         if self._telnet_echo_password:
-            self._send_buffer += '*'
+            self._echo_buffer += '*'
         else:
-            self._send_buffer += byte
+            self._echo_buffer += byte
 
 
     def _iac_sniffer(self, byte):

@@ -1,8 +1,9 @@
 from sonzo.telnet import TelnetServer, SonzoClient
 import logging
 
-
-
+LMAGENTA           = chr(27) + "[1;35m"
+WHITE              = chr(27) + "[37m"
+LOGIN = "\n\r\n\r\n\r                             {}Welcome to Sonzo Chat!\n\r\n\r{}"
 class ChatServer(TelnetServer):
     """
     Custom chat server that inherits from sonzo.TelnetServer
@@ -15,9 +16,6 @@ class ChatServer(TelnetServer):
         
     def run(self):
         # Overridden medthod    
-        while True:
-            self.poll()
-            self.processClients()
         while True:
             self.poll()
             self.processClients()
@@ -34,7 +32,8 @@ class ChatServer(TelnetServer):
         for user in self._clients.values():
             if user is not client:
                 user.systemMessage("{} has joined the chat!\n\r".format(client.addrport()))
-    
+                
+        client.systemMessage(LOGIN.format(LMAGENTA, WHITE))
     
     def onDisconnect(self, client):
         # Over-ridden medthod 
