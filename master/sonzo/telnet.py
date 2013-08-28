@@ -347,7 +347,7 @@ class TelnetOption(object):
         
        
         
-class SonzoClient(object):
+class TelnetClient(object):
     """
     Telent Client Class
     """
@@ -370,6 +370,7 @@ class SonzoClient(object):
         self._terminal_speed = 'UNKNOWN'
         self._character_mode = False
         self._cmd_ready = False
+        self._cmd_list = deque()
         self._ansi = False
         self._columns = 80
         self._rows = 24
@@ -471,8 +472,22 @@ class SonzoClient(object):
         
         
     def commandReady(self):
+        """
+        Is there a command ready?
+        """
         return self._cmd_ready
         
+
+    def getCommand(self):
+        """
+        Return first command line command list.
+        """
+        if self.commandReady() and len(self._cmd_list):
+            return self._cmd_list.pop()
+        else:
+            self._cmd_ready = False
+            return ""
+
         
     def inCharacterMode(self):
         """
@@ -846,7 +861,6 @@ class SonzoClient(object):
         logging.debug("Got three byte cmd {}:{}".format(ord(cmd), ord(option)))
 
         ## Incoming DO's and DONT's refer to the status of this end
-        print(ord(cmd))
         if cmd == DO:
             if option == BINARY or option == SGA or option == ECHO:
                 
@@ -1015,7 +1029,6 @@ class SonzoClient(object):
 
     def _note_local_option(self, option, state):
         """Record the status of local negotiated Telnet options."""
-        print("here: {}".format(option))
         if option not in self._telnet_opt_dict:
             self._telnet_opt_dict[option] = TelnetOption()
         self._telnet_opt_dict[option].local_option = state

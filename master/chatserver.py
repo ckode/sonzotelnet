@@ -1,4 +1,4 @@
-from sonzo.telnet import TelnetServer, SonzoClient
+from sonzo.telnet import TelnetServer, TelnetClient
 import logging
 
 LMAGENTA = chr(27) + "[1;35m"
@@ -76,7 +76,7 @@ class ChatServer(TelnetServer):
                         c.sendMessage(client, msg)
 
 
-class ChatClient(SonzoClient):
+class ChatClient(TelnetClient):
     """
     Custom server side client object inherited from sonzo.SonzoClient.
     
