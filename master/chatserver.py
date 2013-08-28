@@ -101,7 +101,7 @@ class ChatClient(SonzoClient):
         """
         Disconnect user.
         """
-        self.systemMessage("Goodbye!")
+        self.systemMessage("Goodbye!\n\r")
         self._new_messages = False
         self._connected = False
 

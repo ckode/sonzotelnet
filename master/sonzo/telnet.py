@@ -56,10 +56,56 @@ Telopts = {
     chr(1): "Server Echo",
     chr(2): "Reconnection",
     chr(3): "Supress Go Ahead (SGA)",
+    chr(4): "Approx Message Size Negotiation",
+    chr(5): "Status",
+    chr(6): "Timing Mark",
+    chr(7): "Remote Controlled Trans and Echo",
+    chr(8): "Output Line Width",
+    chr(9): "Output Page Size",
+    chr(10): "Output Carriage-Return Disposition",
+    chr(11): "Output Horizontal Tab Stops",
+    chr(12): "Output Horizontal Tab Disposition",
+    chr(13): "Output Formfeed Disposition",
+    chr(14): "Output Vertical Tabstops",
+    chr(15): "Output Vertical Tab Disposition",
+    chr(16): "Output Linefeed Disposition",
+    chr(17): "Extended ASCII",
+    chr(18): "Logout",
+    chr(19): "Byte Macro",
+    chr(20): "Data Entry Terminal",
+    chr(21): "SUPDUP",
+    chr(22): "SUPDUP Output",
+    chr(23): "Send Location",
     chr(24): "Terminal Type",
+    chr(25): "End of Record",
+    chr(26): "TACACS User Identification",
+    chr(27): "Output Marking",
+    chr(28): "Terminal Location Number",
+    chr(29): "Telnet 3270 Regime",
+    chr(30): "X.3 PAD",
     chr(31): "Negotiate About Window Size (NAWS)",
     chr(32): "Terminal Speed",
-    chr(34): "Line Mode"
+    chr(33): "Remote Flow Control",
+    chr(34): "Line Mode",
+    chr(35): "X Display Location",
+    chr(36): "Environment Option",
+    chr(37): "Authentication Option",
+    chr(38): "Encryption Option",
+    chr(39): "New Environment Option",
+    chr(40): "TN3270E",
+    chr(41): "XAUTH",
+    chr(42): "CHARSET",
+    chr(43): "Telnet Remote Serial Port (RSP)",
+    chr(44): "Com Port Control Option",
+    chr(45): "Telnet Suppress Local Echo",
+    chr(46): "Telnet Start TLS",
+    chr(47): "KERMIT",
+    chr(48): "SEND-URL",
+    chr(49): "FORWARD_X",
+    chr(138): "TELOPT PRAGMA LOGON",
+    chr(139): "TELOPT SSPI LOGON",
+    chr(140): "TELOPT PRAGMA HEARTBEAT",
+    chr(255): "Extended-Options-List"
     }
 
 #--[ Terminal Type enumerations - Mark Richardson Nov 2012]--------------------
@@ -310,7 +356,7 @@ class SonzoClient(object):
         """
         Initialize a new client object.
         """
-        
+
         self._protocol = "telnet"
         self._protocol_negotiation = False
         self._connected = True
@@ -538,7 +584,11 @@ class SonzoClient(object):
         if not len(data):
             logging.debug("No data received.  Connection lost.")
             raise ConnectionLost()
-         
+        
+        # Workaround for clients that send CR as "\r0" (carrage return plus a null)
+        if data == "{}{}".format(chr(13), chr(0)):
+            data = "\n"
+            
         for byte in data:
             self._iac_sniffer(byte)
              
@@ -643,7 +693,7 @@ class SonzoClient(object):
         """
         ## Filter out non-printing characters
         #if (byte >= ' ' and byte <= '~') or byte == '\n':
-                      
+             
         if self._telnet_echo:
             self._echo_byte(byte)
         if chr(8) is byte or chr(127) is byte:
@@ -660,6 +710,8 @@ class SonzoClient(object):
 
         if byte == '\n':
             self._echo_buffer += '\r'
+ #       if byte == '\r':
+ #           self._echo_buffer += '\n'
         if self._telnet_echo_password:
             self._echo_buffer += '*'
         # If  backspace or delete, delete last character in echo.
@@ -794,6 +846,7 @@ class SonzoClient(object):
         logging.debug("Got three byte cmd {}:{}".format(ord(cmd), ord(option)))
 
         ## Incoming DO's and DONT's refer to the status of this end
+        print(ord(cmd))
         if cmd == DO:
             if option == BINARY or option == SGA or option == ECHO:
                 
@@ -962,6 +1015,7 @@ class SonzoClient(object):
 
     def _note_local_option(self, option, state):
         """Record the status of local negotiated Telnet options."""
+        print("here: {}".format(option))
         if option not in self._telnet_opt_dict:
             self._telnet_opt_dict[option] = TelnetOption()
         self._telnet_opt_dict[option].local_option = state
