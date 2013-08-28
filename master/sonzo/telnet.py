@@ -376,6 +376,7 @@ class TelnetClient(object):
         self._rows = 24
         self._send_pending = False
         self._echo_buffer = ''
+        self._echo_buffer_count = 0
         self._send_buffer = ''
         self._recv_buffer = ''
         self._connect_time = time.time()
@@ -725,14 +726,19 @@ class TelnetClient(object):
 
         if byte == '\n':
             self._echo_buffer += '\r'
- #       if byte == '\r':
- #           self._echo_buffer += '\n'
+            self._echo_buffer_count = 0
+
         if self._telnet_echo_password:
             self._echo_buffer += '*'
         # If  backspace or delete, delete last character in echo.
         if byte is chr(8) or byte is chr(127):
+            if self._echo_buffer_count < 1:
+                return
+            print("not zero {}".format(self._echo_buffer_count))
+            self._echo_buffer_count =- 1
             self._echo_buffer += "{}{}".format(chr(8), "{}[0K".format(chr(27)))
         else:
+            self._echo_buffer_count =+ 1
             self._echo_buffer += byte
 
 
