@@ -247,7 +247,6 @@ class TelnetServer(object):
                     sock.close()
                     continue
             
-                # Reject new connects if max connections reached.    
                 if self.clientCount() >= MAX_CONNECTIONS:
                     logging.warning("New connection rejected.  Maximum connection count reached.")
                     self.rejectNewConnection()
@@ -300,8 +299,7 @@ class TelnetOption(object):
         self.option_text = "Unknown"    # Friendly text for debug or display
     
         
-        
-        
+       
         
 class SonzoClient(object):
     """
@@ -541,19 +539,6 @@ class SonzoClient(object):
             logging.debug("No data received.  Connection lost.")
             raise ConnectionLost()
          
-        # Look for backspaces and handle them 
-        tmp = ''
-        for byte in data:
-            if chr(8) in byte:
-                if len(self._recv_buffer) is not 0:
-                    self._recv_buffer = self._recv_buffer[:-1]
-                    if self._telnet_echo and self._echo_buffer:
-                        self._echo_buffer = self._echo_buffer[:-1]
-            else:
-                tmp = tmp + byte
- 
-        data = tmp 
-                   
         for byte in data:
             self._iac_sniffer(byte)
              
@@ -661,6 +646,10 @@ class SonzoClient(object):
                       
         if self._telnet_echo:
             self._echo_byte(byte)
+        if chr(8) is byte or chr(127) is byte:
+            if len(self._recv_buffer) is not 0:
+                self._recv_buffer = self._recv_buffer[:-1]
+                return
         self._recv_buffer += byte
 
 
@@ -673,6 +662,9 @@ class SonzoClient(object):
             self._echo_buffer += '\r'
         if self._telnet_echo_password:
             self._echo_buffer += '*'
+        # If  backspace or delete, delete last character in echo.
+        if byte is chr(8) or byte is chr(127):
+            self._echo_buffer += "{}{}".format(chr(8), "{}[0K".format(chr(27)))
         else:
             self._echo_buffer += byte
 

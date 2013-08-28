@@ -1,9 +1,9 @@
 from sonzo.telnet import TelnetServer, SonzoClient
 import logging
 
-LMAGENTA           = chr(27) + "[1;35m"
-WHITE              = chr(27) + "[37m"
-LOGIN = "\n\r\n\r\n\r                             {}Welcome to Sonzo Chat!\n\r\n\r{}"
+LMAGENTA = chr(27) + "[1;35m"
+WHITE    = chr(27) + "[37m"
+LOGIN    = "\n\r\n\r\n\r                             {}Welcome to Sonzo Chat!\n\r\n\r{}"
 class ChatServer(TelnetServer):
     """
     Custom chat server that inherits from sonzo.TelnetServer
