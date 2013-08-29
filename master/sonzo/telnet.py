@@ -186,7 +186,7 @@ class TelnetServer(object):
             self.processClients()                    
             
 
-    def install(self, func, *args, **kwargs):
+    def install(self, *args, **kwargs):
         """
         Install a function to be executed during the main loop.
         """
@@ -211,7 +211,7 @@ class TelnetServer(object):
             logging.error("Error: Could not install loopingCall function.")
     
     
-    def callLater(self, func, calltime, *args, **kwargs):
+    def callLater(self, *args, **kwargs):
         """
         Install call later.
         """
