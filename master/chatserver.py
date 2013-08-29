@@ -1,5 +1,6 @@
 from sonzo.telnet import TelnetServer, TelnetClient
 import logging
+import time
 
 LMAGENTA = chr(27) + "[1;35m"
 WHITE    = chr(27) + "[37m"
@@ -14,16 +15,13 @@ class ChatServer(TelnetServer):
         TelnetServer.__init__(self, address='', port=23, timeout=0.1)
         logging.info(" Sonzo Chat Server starting up...")
         
-    def run(self):
-        # Overridden medthod    
-        while True:
-            self.poll()
-            self.processClients()
-            
+           
             
     def newConnection(self, sock, addr):
         # Overridden medthod    
+        self.loopingCall("Looping at 10 seconds", func=print, runtime=10)
         return ChatClient(sock, addr)
+
 
         
     def onConnect(self, client):

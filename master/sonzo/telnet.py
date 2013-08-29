@@ -140,6 +140,14 @@ class TelnetServer(object):
         self._negotiating_clients = {}
         self._deadclients = []
         
+        # Embbed function in run() loop
+        self._installedFunctions = []
+        # Installed, timed looping calls.
+        self._loopingCalls = []
+        # Functions to be called later.
+        self._callLater = [] 
+        
+        
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
@@ -156,13 +164,65 @@ class TelnetServer(object):
         """
         Start Telnet Server's Main Loop.
         
-        Override if required, though for the most part it shouldn't
-        be necessary.
         """
         while True:
             self.poll()
-            self.processClients()
+            
+            # Execute installed functions
+            for function in self._installedFunctions:
+                function.execute()
+                
+            # Excute timed loopingCalls.
+            for call in self._loopingCalls:
+                if call.runtime <= time.time():
+                    call.execute()
+                    
+            # Execute callLater functions then remove from self.callLater list.
+            for call in self._loopingCalls:
+                if call.runtime <= time.time():
+                    call.execute()
+                    del self._callLater[call]
+
+            self.processClients()                    
+            
+
+    def install(self, func, *args, **kwargs):
+        """
+        Install a function to be executed during the main loop.
+        """
+        if kwargs['func']:
+            newcall = InstallFunction(*args, func=kwargs['func'])
+        else:
+            logging.error("Error: Could not install function. Required 'func' keyword missing from TelnetServer.install() call")
         
+        
+    def loopingCall(self, *args, **kwargs):
+        """
+        Install looping call.
+        
+        loopingCall([args_list], func=<func>, runtime=<int>)
+        """
+        if kwargs['func'] and kwargs['runtime']:
+            newcall = LoopingCall(*args, func=kwargs['func'], runtime=kwargs['runtime'])
+        
+        if newcall:
+            self._loopingCalls.append(newcall)
+        else:
+            logging.error("Error: Could not install loopingCall function.")
+    
+    
+    def callLater(self, func, calltime, *args, **kwargs):
+        """
+        Install call later.
+        """
+        if kwargs['func'] and kwargs['runtime']:
+            newcall = CallLater(*args, func=kwargs['func'], runtime=kwargs['runtime'])
+        
+        if newcall:
+            self._callLater.append(newcall)
+        else:
+            logging.error("Error: Could not install callLater function.")
+
         
     def processClients(self):
         """
@@ -333,7 +393,9 @@ class TelnetServer(object):
         for dead in done_negotiating:
             del self._negotiating_clients[dead]
         del done_negotiating 
-                
+
+
+        
 class TelnetOption(object):
     """
     Simple class used to track the status of an extended Telnet option.
@@ -553,6 +615,7 @@ class TelnetClient(object):
                 self._connected = False
                 return False            
             self._echo_buffer = ''
+
             
             
         if self.inCharacterMode():
@@ -713,7 +776,7 @@ class TelnetClient(object):
         if self._telnet_echo:
             self._echo_byte(byte)
         if chr(8) is byte or chr(127) is byte:
-            if len(self._recv_buffer) is not 0:
+            if self._recv_buffer is not chr(13) or len(self._recv_buffer) is not 0:
                 self._recv_buffer = self._recv_buffer[:-1]
                 return
         self._recv_buffer += byte
@@ -722,23 +785,27 @@ class TelnetClient(object):
     def _echo_byte(self, byte):
         """
         Echo a character back to the client and convert LF into CR\LF.
-        """   
-
+        """ 
+        # Enter key hit, reset buffer and append \r        
         if byte == '\n':
             self._echo_buffer += '\r'
             self._echo_buffer_count = 0
-
+            return
+        # Return gives two bytes. Ignore the second one. (chr(13))
+        if byte == chr(13):
+            return
+            
         if self._telnet_echo_password:
             self._echo_buffer += '*'
-        # If  backspace or delete, delete last character in echo.
+        # If  backspace or delete, delete last character in echo as long as there is 
+        # a typed character to delete.
         if byte is chr(8) or byte is chr(127):
             if self._echo_buffer_count < 1:
                 return
-            print("not zero {}".format(self._echo_buffer_count))
-            self._echo_buffer_count =- 1
+            self._echo_buffer_count = self._echo_buffer_count - 1
             self._echo_buffer += "{}{}".format(chr(8), "{}[0K".format(chr(27)))
         else:
-            self._echo_buffer_count =+ 1
+            self._echo_buffer_count = self._echo_buffer_count + 1
             self._echo_buffer += byte
 
 
@@ -1090,3 +1157,82 @@ class TelnetClient(object):
     def _iac_wont(self, option):
         """Send a Telnet IAC "WONT" sequence."""
         self.send("{}{}{}".format(IAC, WONT, option))
+
+        
+        
+#=======================================================================
+# Looping Call Class
+#=======================================================================
+
+class LoopingCall(object):
+    """
+    Looping Call object.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        """
+        Initialize looping call.
+        """
+        self._func = kwargs['func']
+        self._looptime = kwargs['runtime']
+        self.runtime = time.time() + self._looptime
+        self._args = args
+
+        
+    def execute(self):
+        """
+        Execute looping call.
+        """
+        self._func(*self._args)
+        self.runtime = time.time() + self._looptime
+        return  
+        
+        
+#=======================================================================
+# CallLater Class
+#=======================================================================
+
+class CallLater(object):
+    """
+    Looping Call object.
+    """
+    
+    def __init__(self, func, runtime, *args, **kwargs):
+        """
+        Initialize calllater class.
+        """
+        self._func = func
+        self.runtime = time.time() + runtime
+        self._args = args
+        self._kwargs = kwargs
+        
+    def execute(self):
+        """
+        Execute callLater.
+        """
+        result = self._func(*self._args, **self._kwargs)
+        return
+        
+#=======================================================================
+# Installed function Class
+#=======================================================================
+
+class InstalledFunction(object):
+    """
+    Installed Function object.
+    """
+    
+    def __init__(self, func, *args, **kwargs):
+        """
+        Initialize InstalledFunction class.
+        """
+        self._func = func
+        self._args = args
+        self._kwargs = kwargs
+        
+    def execute(self):
+        """
+        Execute InstalledFunction.
+        """
+        self._func(self._args, self._kwargs)
+        return
