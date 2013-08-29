@@ -178,7 +178,7 @@ class TelnetServer(object):
                     call.execute()
                     
             # Execute callLater functions then remove from self.callLater list.
-            for call in self._loopingCalls:
+            for call in self._callLater:
                 if call.runtime <= time.time():
                     call.execute()
                     del self._callLater[call]
