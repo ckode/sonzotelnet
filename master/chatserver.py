@@ -1,4 +1,4 @@
-from sonzo.telnet import TelnetServer, TelnetClient
+from sonzo.telnet import TelnetServer, TelnetProtocol
 import logging
 import time
 
@@ -14,12 +14,14 @@ class ChatServer(TelnetServer):
         # Overridden medthod  
         TelnetServer.__init__(self, address='', port=23, timeout=0.1)
         logging.info(" Sonzo Chat Server starting up...")
+        tensecondloop = self.loopingCall("Looping at 10 seconds", func=print)
+        tensecondloop.start(10)
+         
         
            
             
     def newConnection(self, sock, addr):
         # Overridden medthod    
-        self.loopingCall("Looping at 10 seconds", func=print, runtime=10)
         return ChatClient(sock, addr)
 
 
@@ -33,6 +35,7 @@ class ChatServer(TelnetServer):
                 
         client.systemMessage(LOGIN.format(LMAGENTA, WHITE))
     
+    
     def onDisconnect(self, client):
         # Over-ridden medthod 
         logging.info(" {} disconnecting.".format(client.addrport()))        
@@ -41,40 +44,46 @@ class ChatServer(TelnetServer):
                 user.systemMessage("{} logged off.\n\r".format(client.addrport()))
         
         
+
     def processClients(self):
-        # Overridden medthod    
-        self.chat()        
+        """
+        Process client's input.
+        """
+        for client in self.getClientList():
+            while True:
+                msg = client.dataRecieved()
+                if not msg:
+                    return
+                else:
+                    self.chat(client, msg)
         
- 
     # This method is specific to the ChatServer class and not a part
     # of the sonzo.TelnetServer class.
-    def chat(self):
-        for client in self._clients.values():
-            if client.commandReady():
-                if len(client._cmd_list) > 0:
-                    msg = client._cmd_list.pop()
-                    
-                    #Check to see if someone issues a command.
-                    if msg.startswith("=a".lower()):
-                        client.setANSIMode()
-                        client.systemMessage("ANSI: {}\n\r".format(client._ansi))
-                        logging.info(" {} changing ANSI to: {}.".format(client.addrport(), client._ansi))
-                        continue
-                    if msg.startswith("/quit".lower()):
-                        client.disconnect()
-                        continue
-                    if msg.startswith("~".lower()):
-                        logging.info(" {} changing character mode to: {}.".format(client.addrport(), client._character_mode))
-                        client.setCharacterMode()
-                        client.systemMessage("Character Mode is now: {}\n\r".format(client._character_mode))
-                        continue
-                        
-                    # If no command, say it in the chat room.
-                    for c in self._clients.values():
-                        c.sendMessage(client, msg)
+    def chat(self, client, msg):
+        #Check to see if someone issues a command.
+        if msg.startswith("=a".lower()):
+            client.setANSIMode()
+            client.systemMessage("ANSI: {}\n\r".format(client._ansi))
+            logging.info(" {} changing ANSI to: {}.".format(client.addrport(), client._ansi))
+            return
+        if msg.startswith("/quit".lower()):
+            client.disconnect()
+            return
+        if msg.startswith("~".lower()):
+            logging.info(" {} changing character mode to: {}.".format(client.addrport(), client._character_mode))
+            client.setCharacterMode()
+            client.systemMessage("Character Mode is now: {}\n\r".format(client._character_mode))
+            return
+        if msg.startswith("/runlater".lower()):
+            self.callLater("Ran 2 seconds later.", func=print, runtime=2)   
+        if msg.startswith("/install".lower()):
+            self.install("Fart!", func=print)
+        # If no command, say it in the chat room.
+        for c in self.getClientList():
+            c.sendMessage(client, msg)
 
 
-class ChatClient(TelnetClient):
+class ChatClient(TelnetProtocol):
     """
     Custom server side client object inherited from sonzo.SonzoClient.
     

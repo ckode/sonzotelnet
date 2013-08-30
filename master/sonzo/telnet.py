@@ -5,6 +5,7 @@ import sys
 import re
 import time
 
+from sonzo.task import LoopingCall, CallLater, InstallFunction
 from collections import deque
 
 
@@ -166,7 +167,7 @@ class TelnetServer(object):
         
         """
         while True:
-            self.poll()
+            self._poll()
             
             # Execute installed functions
             for function in self._installedFunctions:
@@ -174,54 +175,16 @@ class TelnetServer(object):
                 
             # Excute timed loopingCalls.
             for call in self._loopingCalls:
-                if call.runtime <= time.time():
-                    call.execute()
+                call.execute()
                     
             # Execute callLater functions then remove from self.callLater list.
             for call in self._callLater:
                 if call.runtime <= time.time():
                     call.execute()
-                    del self._callLater[call]
+                    self._callLater.remove(call)
 
             self.processClients()                    
-            
 
-    def install(self, *args, **kwargs):
-        """
-        Install a function to be executed during the main loop.
-        """
-        if kwargs['func']:
-            newcall = InstallFunction(*args, func=kwargs['func'])
-        else:
-            logging.error("Error: Could not install function. Required 'func' keyword missing from TelnetServer.install() call")
-        
-        
-    def loopingCall(self, *args, **kwargs):
-        """
-        Install looping call.
-        
-        loopingCall([args_list], func=<func>, runtime=<int>)
-        """
-        if kwargs['func'] and kwargs['runtime']:
-            newcall = LoopingCall(*args, func=kwargs['func'], runtime=kwargs['runtime'])
-        
-        if newcall:
-            self._loopingCalls.append(newcall)
-        else:
-            logging.error("Error: Could not install loopingCall function.")
-    
-    
-    def callLater(self, *args, **kwargs):
-        """
-        Install call later.
-        """
-        if kwargs['func'] and kwargs['runtime']:
-            newcall = CallLater(*args, func=kwargs['func'], runtime=kwargs['runtime'])
-        
-        if newcall:
-            self._callLater.append(newcall)
-        else:
-            logging.error("Error: Could not install callLater function.")
 
         
     def processClients(self):
@@ -231,6 +194,7 @@ class TelnetServer(object):
         Override this function to handle server logic.
         """
         pass
+                    
         
         
     def newConnection(self, sock, addr):
@@ -275,30 +239,72 @@ class TelnetServer(object):
         Override with custom disconnect code.
         """
         pass
-    
-        
-    def clientCount(self):
-        """
-        Return current connection count.
-        """
-        return len(self._clients)
-    
+     
     
     def rejectNewConnections(self, msg="Sorry, no new connects at this time."):
         """
         Reject new connections.
         """
         pass
+
+       
+    def install(self, *args, **kwargs):
+        """
+        Install a function to be executed during the main loop.
+        """
+        if kwargs['func']:
+            newcall = InstallFunction(*args, func=kwargs['func'])
+            if newcall:
+                self._installedFunctions.append(newcall)
+        else:
+            logging.error("Error: Could not install function. Required 'func' keyword missing from TelnetServer.install() call")
+        
+        
+    def loopingCall(self, *args, **kwargs):
+        """
+        Install looping call.
+        
+        loopingCall([args_list], func=<func>, runtime=<int>)
+        """
+        if kwargs['func']:
+            newcall = LoopingCall(*args, func=kwargs['func'])
+        
+        if newcall:
+            self._loopingCalls.append(newcall)
+        else:
+            logging.error("Error: Could not install loopingCall function.")
     
+        return newcall
+    
+    
+    def callLater(self, *args, **kwargs):
+        """
+        Install call later.
+        """
+        if kwargs['func'] and kwargs['runtime']:
+            newcall = CallLater(*args, func=kwargs['func'], runtime=kwargs['runtime'])
+        
+        if newcall:
+            self._callLater.append(newcall)
+        else:
+            logging.error("Error: Could not install callLater function.") 
+
+
+    def clientCount(self):
+        """
+        Return current connection count.
+        """
+        return len(self._clients)
+        
     
     def getClientList(self):
         """
         Return list of clients.
         """
-        return self._clients.values()
-    
-    
-    def poll(self):
+        return self._clients.values()        
+
+        
+    def _poll(self):
         """
         Poll the server for new connections and handling OI for existing
         connections.
@@ -409,7 +415,7 @@ class TelnetOption(object):
         
        
         
-class TelnetClient(object):
+class TelnetProtocol(object):
     """
     Telent Client Class
     """
@@ -516,6 +522,15 @@ class TelnetClient(object):
         return self._fileno
     
     
+    def dataRecieved(self):
+        """
+        Return data recived.
+        
+        Override this function.
+        """
+        return self._getCommand()
+        
+        
     def isConnected(self):
         """
         Is the client connected?
@@ -534,22 +549,22 @@ class TelnetClient(object):
         return False
         
         
-    def commandReady(self):
+    def _commandReady(self):
         """
         Is there a command ready?
         """
         return self._cmd_ready
         
 
-    def getCommand(self):
+    def _getCommand(self):
         """
         Return first command line command list.
         """
-        if self.commandReady() and len(self._cmd_list):
+        if self._commandReady() and len(self._cmd_list):
             return self._cmd_list.pop()
         else:
             self._cmd_ready = False
-            return ""
+            return 
 
         
     def inCharacterMode(self):
@@ -1159,80 +1174,3 @@ class TelnetClient(object):
         self.send("{}{}{}".format(IAC, WONT, option))
 
         
-        
-#=======================================================================
-# Looping Call Class
-#=======================================================================
-
-class LoopingCall(object):
-    """
-    Looping Call object.
-    """
-    
-    def __init__(self, *args, **kwargs):
-        """
-        Initialize looping call.
-        """
-        self._func = kwargs['func']
-        self._looptime = kwargs['runtime']
-        self.runtime = time.time() + self._looptime
-        self._args = args
-
-        
-    def execute(self):
-        """
-        Execute looping call.
-        """
-        self._func(*self._args)
-        self.runtime = time.time() + self._looptime
-        return  
-        
-        
-#=======================================================================
-# CallLater Class
-#=======================================================================
-
-class CallLater(object):
-    """
-    Looping Call object.
-    """
-    
-    def __init__(self, func, runtime, *args, **kwargs):
-        """
-        Initialize calllater class.
-        """
-        self._func = func
-        self.runtime = time.time() + runtime
-        self._args = args
-        self._kwargs = kwargs
-        
-    def execute(self):
-        """
-        Execute callLater.
-        """
-        result = self._func(*self._args, **self._kwargs)
-        return
-        
-#=======================================================================
-# Installed function Class
-#=======================================================================
-
-class InstalledFunction(object):
-    """
-    Installed Function object.
-    """
-    
-    def __init__(self, func, *args, **kwargs):
-        """
-        Initialize InstalledFunction class.
-        """
-        self._func = func
-        self._args = args
-        self._kwargs = kwargs
-        
-    def execute(self):
-        """
-        Execute InstalledFunction.
-        """
-        self._func(self._args, self._kwargs)
-        return
