@@ -5,82 +5,6 @@ import time
 LMAGENTA = chr(27) + "[1;35m"
 WHITE    = chr(27) + "[37m"
 LOGIN    = "\n\r\n\r\n\r                             {}Welcome to Sonzo Chat!\n\r\n\r{}"
-class ChatServer(TelnetServer):
-    """
-    Custom chat server that inherits from sonzo.TelnetServer
-    """
-
-    def __init__(self, address='', port=23, timeout=0.1):
-        # Overridden medthod  
-        TelnetServer.__init__(self, address='', port=23, timeout=0.1)
-        logging.info(" Sonzo Chat Server starting up...")
-        tensecondloop = self.loopingCall("Looping at 10 seconds", func=print)
-        tensecondloop.start(10)
-         
-        
-           
-            
-    def newConnection(self, sock, addr):
-        # Overridden medthod    
-        return ChatClient(sock, addr)
-
-
-        
-    def onConnect(self, client):
-        # Overridden medthod    
-        logging.info(" {} has connected.".format(client.addrport()))
-        for user in self._clients.values():
-            if user is not client:
-                user.systemMessage("{} has joined the chat!\n\r".format(client.addrport()))
-                
-        client.systemMessage(LOGIN.format(LMAGENTA, WHITE))
-    
-    
-    def onDisconnect(self, client):
-        # Over-ridden medthod 
-        logging.info(" {} disconnecting.".format(client.addrport()))        
-        for user in self._clients.values():
-            if user is not client:
-                user.systemMessage("{} logged off.\n\r".format(client.addrport()))
-        
-        
-
-    def processClients(self):
-        """
-        Process client's input.
-        """
-        for client in self.getClientList():
-            while True:
-                msg = client.dataRecieved()
-                if not msg:
-                    return
-                else:
-                    self.chat(client, msg)
-        
-    # This method is specific to the ChatServer class and not a part
-    # of the sonzo.TelnetServer class.
-    def chat(self, client, msg):
-        #Check to see if someone issues a command.
-        if msg.startswith("=a".lower()):
-            client.setANSIMode()
-            client.systemMessage("ANSI: {}\n\r".format(client._ansi))
-            logging.info(" {} changing ANSI to: {}.".format(client.addrport(), client._ansi))
-            return
-        if msg.startswith("/quit".lower()):
-            client.disconnect()
-            return
-        if msg.startswith("~".lower()):
-            logging.info(" {} changing character mode to: {}.".format(client.addrport(), client._character_mode))
-            client.setCharacterMode()
-            client.systemMessage("Character Mode is now: {}\n\r".format(client._character_mode))
-            return
-        if msg.startswith("/runlater".lower()):
-            self.callLater("Ran 2 seconds later.", func=print, runtime=2)   
-        if msg.startswith("/install".lower()):
-            self.install("Fart!", func=print)
-        # If no command, say it in the chat room.
-        for c in self.getClientList():
-            c.sendMessage(client, msg)
 
 
 class ChatClient(TelnetProtocol):
@@ -91,30 +15,87 @@ class ChatClient(TelnetProtocol):
     """
     def _init_(self, sock, addr):
         # Overridden medthod    
-        SonzoClient.__init__(self, sock, addr)
+#        SonzoClient.__init__(self, sock, addr)
         self.name = addr
+        
+    def onConnect(self):
+        # Overridden medthod    
+        logging.info(" {} has connected.".format(self.addrport()))
 
+        for user in USERLIST:
+            systemMessage(user, "{} has joined the chat!\n\r".format(self.addrport()))
+        USERLIST.append(self)        
+        systemMessage(self, LOGIN.format(LMAGENTA, WHITE))
+    
+    
+    def onDisconnect(self):
+        # Over-ridden medthod 
+        logging.info(" {} disconnecting.".format(self.addrport()))     
+        USERLIST.remove(self)
+        for user in USERLIST:
+            if user is not self:
+                systemMessage(user, "{} logged off.\n\r".format(self.addrport()))
 
-    # None of the methods below are a part of the
-    # sonzo.SonzoClient class.    
-    def sendMessage(self, client, message):
-        message = "{} says, {}".format(client.addrport(), message)
-        self.send(message)
-
-    def systemMessage(self, message):
-        self.send(message)
+    def dataRecieved(self, data):
+        """
+        Overriden function.  Called when data is recieved from client.
+        """
+        chat(self, data)
+        
 
     def disconnect(self):
         """
         Disconnect user.
         """
-        self.systemMessage("Goodbye!\n\r")
+        systemMessage(self, "Goodbye!\n\r")
         self._new_messages = False
         self._connected = False
 
 
         
+        
+
+def chat(client, msg):
+    #Check to see if someone issues a command.
+    if msg.startswith("=a".lower()):
+        client.setANSIMode()
+        client.systemMessage("ANSI: {}\n\r".format(client._ansi))
+        logging.info(" {} changing ANSI to: {}.".format(client.addrport(), client._ansi))
+        return
+    if msg.startswith("/quit".lower()):
+        client.disconnect()
+        return
+    if msg.startswith("~".lower()):
+        logging.info(" {} changing character mode to: {}.".format(client.addrport(), client._character_mode))
+        client.setCharacterMode()
+        client.systemMessage("Character Mode is now: {}\n\r".format(client._character_mode))
+        return
+    if msg.startswith("/runlater".lower()):
+        chatsrvr.callLater("Ran 2 seconds later.", func=print, runtime=2)   
+    if msg.startswith("/install".lower()):
+        chatsrvr.install("Fart!", func=print)
+    # If no command, say it in the chat room.
+    for c in USERLIST:
+        sendMessage(c, msg)
+
+  
+def sendMessage(client, message):
+    message = "{} says, {}".format(client.addrport(), message)
+    client.send(message)
+
+def systemMessage(client, message):
+    client.send(message)
+    
+    
+    
 if __name__ == '__main__':
     logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
-    chatsrvr = ChatServer(address='', port=23)
+    USERLIST = []
+    chatclient = ChatClient
+    chatsrvr = TelnetServer(clientclass=chatclient, address='', port=23)
+    logging.info(" Sonzo Chat Server starting up...")
+    tensecondloop = chatsrvr.loopingCall("Looping at 10 seconds", func=print)
+    tensecondloop.start(10)
+     
+    
     chatsrvr.run()

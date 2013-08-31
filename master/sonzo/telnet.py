@@ -126,7 +126,7 @@ class TelnetServer(object):
     Telnet Server
     """
     
-    def __init__(self, address='', port=23, timeout=0.1):
+    def __init__(self, address='', clientclass=None, port=23, timeout=0.1):
         """
         Initialize a new TelnetServer.
         
@@ -140,6 +140,7 @@ class TelnetServer(object):
         self._clients = {}
         self._negotiating_clients = {}
         self._deadclients = []
+        self.clientclass = clientclass
         
         # Embbed function in run() loop
         self._installedFunctions = []
@@ -160,6 +161,7 @@ class TelnetServer(object):
             raise
         
         self._server_fileno = self._socket.fileno()
+    
         
     def run(self):
         """
@@ -187,14 +189,27 @@ class TelnetServer(object):
 
 
         
+#    def processClients(self):
+#        """
+#        Check each client for waiting information.
+#        
+#        Override this function to handle server logic.
+#        """
+#        pass
+    
+                    
     def processClients(self):
         """
-        Check each client for waiting information.
-        
-        Override this function to handle server logic.
+        Process client's input.
         """
-        pass
-                    
+        for client in self.getClientList():
+            while True:
+                msg = client._getCommand()
+                if not msg:
+                    break
+                else:
+                    client.dataRecieved(msg)        
+        
         
         
     def newConnection(self, sock, addr):
@@ -318,14 +333,14 @@ class TelnetServer(object):
             if client._protocol_negotiation == True:
                 self._clients[client.getSocket()] = client
                 done_negotiating.append(client.getSocket())
-                self.onConnect(client)
+                client.onConnect()
                 
         
         for client in self._clients.values():
             if client.isConnected():
                 recv_list.append(client.getSocket())
             else:
-                self.onDisconnect(client)
+                client.onDisconnect()
                 dead_list.append(client.getSocket())
                 
         for client in self._negotiating_clients.values():
@@ -365,7 +380,8 @@ class TelnetServer(object):
                     sock.close()
                     continue
 
-                new_client = self.newConnection(sock, addr)
+                #new_client = self.newConnection(sock, addr)
+                new_client = self.clientclass(sock, addr)
                 new_client._request_will_echo()
                 new_client._detect_term_caps()
                 self._negotiating_clients[new_client.getSocket()] = new_client
@@ -375,7 +391,7 @@ class TelnetServer(object):
                 try: 
                     self._clients[fileno]._recv()
                 except ConnectionLost:
-                    self.onDisconnect(self._clients[fileno])
+                    onDisconnect()
                     
             elif  fileno in self._negotiating_clients.keys():            
                 try: 
@@ -522,13 +538,13 @@ class TelnetProtocol(object):
         return self._fileno
     
     
-    def dataRecieved(self):
+    def dataRecieved(self, data):
         """
         Return data recived.
         
         Override this function.
         """
-        return self._getCommand()
+        pass
         
         
     def isConnected(self):
