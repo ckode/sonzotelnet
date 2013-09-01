@@ -4,6 +4,7 @@ import time
 
 LMAGENTA = chr(27) + "[1;35m"
 WHITE    = chr(27) + "[37m"
+LGREEN   = chr(27) + "[1;32m"
 LOGIN    = "\n\r\n\r\n\r                             {}Welcome to Sonzo Chat!\n\r\n\r{}"
 
 
@@ -52,14 +53,18 @@ class ChatClient(TelnetProtocol):
         self._connected = False
 
 
-        
+def color(c, color):
+    if c._ansi:
+        return color
+    else:
+        return ""
         
 
 def chat(client, msg):
     #Check to see if someone issues a command.
     if msg.startswith("=a".lower()):
         client.setANSIMode()
-        client.systemMessage("ANSI: {}\n\r".format(client._ansi))
+        systemMessage(client, "ANSI: {}\n\r".format(client._ansi))
         logging.info(" {} changing ANSI to: {}.".format(client.addrport(), client._ansi))
         return
     if msg.startswith("/quit".lower()):
@@ -80,7 +85,7 @@ def chat(client, msg):
 
   
 def sendMessage(client, message):
-    message = "{} says, {}".format(client.addrport(), message)
+    message = "{}{} says, {}{}".format(color(client, LGREEN), client.addrport(), color(client, WHITE), message)
     client.send(message)
 
 def systemMessage(client, message):

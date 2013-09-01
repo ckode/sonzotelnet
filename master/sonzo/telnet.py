@@ -185,57 +185,7 @@ class TelnetServer(object):
                     call.execute()
                     self._callLater.remove(call)
 
-            self.processClients()                    
-
-
-        
-#    def processClients(self):
-#        """
-#        Check each client for waiting information.
-#        
-#        Override this function to handle server logic.
-#        """
-#        pass
-    
-                    
-    def processClients(self):
-        """
-        Process client's input.
-        """
-        for client in self.getClientList():
-            while True:
-                msg = client._getCommand()
-                if not msg:
-                    break
-                else:
-                    client.dataRecieved(msg)        
-        
-        
-        
-    def newConnection(self, sock, addr):
-        """
-        Used to create new client object when a user first connects.
-        This function is only used to create and return a custom client.
-        
-        Override with your custom code returning a new client object.
-        
-        You must create your own class that inherits from the 
-        SonzoClient class or use SonzoClient class directly. 
-        
-        Example:
-        
-        client = SonzoClient(sock, addr)
-        return client.
-        
-        ============== or =================
-
-        class MyClient(SonzoClient):
-        ....
-        
-        client = MyClient(sock, addr)
-        return client
-        """
-        pass
+            self._processClients()                    
     
         
     def onConnect(self, client):
@@ -310,14 +260,20 @@ class TelnetServer(object):
         Return current connection count.
         """
         return len(self._clients)
-        
-    
-    def getClientList(self):
-        """
-        Return list of clients.
-        """
-        return self._clients.values()        
 
+                    
+    def _processClients(self):
+        """
+        Process client's input.
+        """
+        for client in self._clients.values():
+            while True:
+                msg = client._getCommand()
+                if not msg:
+                    break
+                else:
+                    client.dataRecieved(msg)  
+                    
         
     def _poll(self):
         """
