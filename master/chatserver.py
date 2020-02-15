@@ -81,11 +81,11 @@ def chat(client, msg):
         chatsrvr.install("Fart!", func=print)
     # If no command, say it in the chat room.
     for c in USERLIST:
-        sendMessage(c, msg)
+        sendMessage(client, c, msg)
 
   
-def sendMessage(client, message):
-    message = "{}{} says, {}{}".format(color(client, LGREEN), client.addrport(), color(client, WHITE), message)
+def sendMessage(sender, client, message):
+    message = "{}{} says, {}{}".format(color(sender, LGREEN), sender.addrport(), color(client, WHITE), message)
     client.send(message)
 
 def systemMessage(client, message):
@@ -99,6 +99,7 @@ if __name__ == '__main__':
     chatclient = ChatClient
     chatsrvr = TelnetServer(clientclass=chatclient, address='', port=23)
     logging.info(" Sonzo Chat Server starting up...")
+    # Example of adding a looping call.
     tensecondloop = chatsrvr.loopingCall("Looping at 10 seconds", func=print)
     tensecondloop.start(10)
      
